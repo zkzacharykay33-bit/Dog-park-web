@@ -57,8 +57,8 @@ export function DirectionsLink({ park }) {
   );
 }
 
-// Typical dog arrivals by hour today, from the last 8 weeks of check-ins
-export function BusyChart({ parkId }) {
+// Typical dog arrivals by hour for a weekday (default today), from the last 8 weeks of check-ins
+export function BusyChart({ parkId, day }) {
   const [rows, setRows] = useState(null);
 
   useEffect(() => {
@@ -72,10 +72,11 @@ export function BusyChart({ parkId }) {
 
   if (!rows) return null;
   const today = new Date().getDay();
-  const nowHour = new Date().getHours();
+  const showDay = day ?? today;
+  const nowHour = showDay === today ? new Date().getHours() : -1;
   const hours = Array.from({ length: 13 }, (_, i) => i + 7);
   const vals = hours.map((h) =>
-    Number(rows.find((r) => r.day_of_week === today && r.hour_of_day === h)?.avg_dog_arrivals || 0)
+    Number(rows.find((r) => r.day_of_week === showDay && r.hour_of_day === h)?.avg_dog_arrivals || 0)
   );
   const max = Math.max(...vals);
 
@@ -84,7 +85,7 @@ export function BusyChart({ parkId }) {
   }
   return (
     <div className="chart">
-      <div className="bars" role="img" aria-label="Typical number of dogs arriving each hour today">
+      <div className="bars" role="img" aria-label="Typical number of dogs arriving each hour">
         {vals.map((v, i) => (
           <div
             key={hours[i]}

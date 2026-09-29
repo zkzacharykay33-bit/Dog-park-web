@@ -53,6 +53,7 @@ export default function MapPage({ data, selectedId, setSelectedId }) {
                     {p.address && <p className="small muted">{p.address}</p>}
                     <div className="btn-row">
                       <CheckInButton park={p} data={data} />
+                      <a className="btn" href={`#park/${p.park_id}`}>Park details</a>
                       <DirectionsLink park={p} />
                     </div>
                   </div>

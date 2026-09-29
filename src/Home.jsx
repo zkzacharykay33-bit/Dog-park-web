@@ -49,6 +49,7 @@ export default function Home({ data, onViewPark }) {
           <BusyChart parkId={best.park_id} />
           <div className="btn-row">
             <CheckInButton park={best} data={data} />
+            <a className="btn" href={`#park/${best.park_id}`}>Park details</a>
             <button className="btn" onClick={() => onViewPark(best.park_id)}>View on map</button>
           </div>
         </section>
@@ -61,7 +62,7 @@ export default function Home({ data, onViewPark }) {
             <a href="#map">Map</a>
           </div>
           {near.map((p) => (
-            <button key={p.park_id} className="list-row row-btn" onClick={() => onViewPark(p.park_id)}>
+            <button key={p.park_id} className="list-row row-btn" onClick={() => { window.location.hash = `park/${p.park_id}`; }}>
               <span className="col">
                 <span className="strong">{p.name}</span>
                 <span className="muted small">{miles(p.distance_m)}</span>

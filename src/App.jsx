@@ -6,6 +6,7 @@ import Home from './Home.jsx';
 import MapPage from './MapPage.jsx';
 import Events from './Events.jsx';
 import Dogs from './Dogs.jsx';
+import ParkPage from './ParkPage.jsx';
 
 export const APP_NAME = 'Field Guide'; // working name — change anytime
 
@@ -49,22 +50,26 @@ function Root() {
   return <Shell session={session} />;
 }
 
-function useHashTab() {
+// Routes: #home, #map, #events, #dogs, #park/<id>
+function useRoute() {
   const read = () => {
-    const key = window.location.hash.slice(1);
-    return TABS.some((t) => t.key === key) ? key : 'home';
+    const h = window.location.hash.slice(1);
+    if (h.startsWith('park/')) return { tab: 'park', parkId: h.slice(5) };
+    return { tab: TABS.some((t) => t.key === h) ? h : 'home' };
   };
-  const [tab, setTab] = useState(read);
+  const [route, setRoute] = useState(read);
   useEffect(() => {
-    const onChange = () => { setTab(read()); window.scrollTo(0, 0); };
+    const onChange = () => { setRoute(read()); window.scrollTo(0, 0); };
     window.addEventListener('hashchange', onChange);
     return () => window.removeEventListener('hashchange', onChange);
   }, []);
-  return tab;
+  return route;
 }
 
 function Shell({ session }) {
-  const tab = useHashTab();
+  const route = useRoute();
+  const tab = route.tab;
+  const navTab = tab === 'park' ? 'map' : tab;
   const data = useParkData(session);
   const [selectedId, setSelectedId] = useState(null);
 
@@ -79,7 +84,7 @@ function Shell({ session }) {
         <a href="#home" className="brand">{APP_NAME}</a>
         <nav className="nav" aria-label="Main">
           {TABS.map((t) => (
-            <a key={t.key} href={`#${t.key}`} aria-current={tab === t.key ? 'page' : undefined}>
+            <a key={t.key} href={`#${t.key}`} aria-current={navTab === t.key ? 'page' : undefined}>
               {t.label}
             </a>
           ))}
@@ -90,6 +95,7 @@ function Shell({ session }) {
         {tab === 'map' && <MapPage data={data} selectedId={selectedId} setSelectedId={setSelectedId} />}
         {tab === 'events' && <Events data={data} session={session} />}
         {tab === 'dogs' && <Dogs data={data} session={session} />}
+        {tab === 'park' && <ParkPage key={route.parkId} parkId={route.parkId} data={data} session={session} />}
       </main>
     </div>
   );
