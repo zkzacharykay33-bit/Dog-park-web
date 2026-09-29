@@ -51,6 +51,41 @@ function isOpenNow(periods) {
   return false;
 }
 
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0]; // Monday first
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function toMinutes(t) {
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function fmtTime(t) {
+  const [h, m] = t.split(':').map(Number);
+  return new Date(2000, 0, 1, h, m).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+function dayText(entry) {
+  if (!entry || entry.closed) return 'Closed';
+  if (entry.open === '00:00' && entry.close === '00:00') return 'Open 24 hours';
+  return `${fmtTime(entry.open)} – ${fmtTime(entry.close)}`;
+}
+
+// Visitor-reported hours → open right now?
+function isOpenFromReport(h) {
+  if (!h) return null;
+  const now = new Date();
+  const d = now.getDay();
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const y = h[(d + 6) % 7];
+  if (y && !y.closed && toMinutes(y.close) <= toMinutes(y.open) && mins < toMinutes(y.close)) return true;
+  const t = h[d];
+  if (!t || t.closed) return false;
+  const o = toMinutes(t.open);
+  const c = toMinutes(t.close);
+  if (c <= o) return mins >= o;
+  return mins >= o && mins < c;
+}
+
 export default function ParkPage({ parkId, data, session }) {
   const uid = session.user.id;
   const [park, setPark] = useState(null);
@@ -59,6 +94,22 @@ export default function ParkPage({ parkId, data, session }) {
   const [detailsError, setDetailsError] = useState(null);
   const [liveDogs, setLiveDogs] = useState([]);
   const [day, setDay] = useState(new Date().getDay());
+  const [hoursReport, setHoursReport] = useState(undefined); // undefined = loading, null = none
+
+  const loadDetails = useCallback(async () => {
+    const { data: d, error } = await supabase.functions.invoke('park-details', { body: { park_id: parkId } });
+    if (error) setDetailsError('Couldn’t load details from Google right now.');
+    else { setDetailsError(null); setDetails(d || {}); }
+  }, [parkId]);
+
+  const loadHours = useCallback(async () => {
+    const { data: rows } = await supabase.from('park_hours_reports')
+      .select('id, hours, note, created_at, user_id, profile:profiles(display_name)')
+      .eq('park_id', parkId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    setHoursReport(rows?.[0] ?? null);
+  }, [parkId]);
 
   const loadLive = useCallback(async () => {
     const [{ data: rows }, { data: dogs }] = await Promise.all([
@@ -72,10 +123,8 @@ export default function ParkPage({ parkId, data, session }) {
 
   useEffect(() => {
     loadLive();
-    supabase.functions.invoke('park-details', { body: { park_id: parkId } }).then(({ data: d, error }) => {
-      if (error) setDetailsError('Couldn’t load hours and photos from Google right now.');
-      else setDetails(d || {});
-    });
+    loadDetails();
+    loadHours();
     const channel = supabase
       .channel(`park-${parkId}`)
       .on('postgres_changes',
@@ -83,7 +132,7 @@ export default function ParkPage({ parkId, data, session }) {
         () => loadLive())
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [parkId, loadLive]);
+  }, [parkId, loadLive, loadDetails, loadHours]);
 
   // Keep the check-in button's state in sync with this page
   useEffect(() => { if (park) loadLive(); }, [data.activeParkId]);
@@ -99,35 +148,24 @@ export default function ParkPage({ parkId, data, session }) {
   if (!park) return <div className="page muted">Loading park…</div>;
 
   const status = crowdStatus(park.dogs_here);
-  const open = isOpenNow(details?.periods);
+  const reportedOpen = isOpenFromReport(hoursReport?.hours);
+  const open = reportedOpen !== null ? reportedOpen : isOpenNow(details?.periods);
   const address = details?.address || park.address;
-  const todayIdx = (new Date().getDay() + 6) % 7; // Google lists Monday first
 
   return (
     <div className="page park-page">
       <a className="back-link" href="#map">← Back to map</a>
 
-      {details?.photo?.url && (
-        <figure className="park-hero">
-          <img src={details.photo.url} alt={`Photo of ${park.name}`} onError={(e) => { e.currentTarget.parentElement.style.display = 'none'; }} />
-          {details.photo.credits?.length > 0 && (
-            <figcaption className="photo-credit">
-              Photo:{' '}
-              {details.photo.credits.map((c, i) => (
-                <span key={c.uri || i}>{i > 0 && ', '}<a href={c.uri} target="_blank" rel="noreferrer">{c.name}</a></span>
-              ))}{' '}
-              · Google
-            </figcaption>
-          )}
-        </figure>
-      )}
+      <Photos parkId={parkId} uid={uid} parkName={park.name} details={details} onReported={loadDetails} />
 
       <header className="stack tight">
         <h1>{park.name}</h1>
         {address && <p className="muted">{address}</p>}
         <div className="tag-row">
           {open !== null && (
-            <span className={open ? 'status-chip open' : 'status-chip closed'}>{open ? 'Open now' : 'Closed now'}</span>
+            <span className={open ? 'status-chip open' : 'status-chip closed'}>
+              {open ? 'Open now' : 'Closed now'}{reportedOpen === null && ' (Google hours)'}
+            </span>
           )}
           {details?.google_rating && (
             <span className="small">★ {details.google_rating} on Google ({details.google_review_count})</span>
@@ -188,17 +226,7 @@ export default function ParkPage({ parkId, data, session }) {
         <BusyChart parkId={parkId} day={day} />
       </section>
 
-      {details?.hours && (
-        <section className="stack tight" aria-label="Hours">
-          <h2>Hours</h2>
-          <ul className="hours-list">
-            {details.hours.map((h, i) => (
-              <li key={h} className={i === todayIdx ? 'today' : ''}>{h}</li>
-            ))}
-          </ul>
-          <p className="muted small">Hours from Google. Check posted signs for seasonal changes.</p>
-        </section>
-      )}
+      <DogParkHours parkId={parkId} uid={uid} report={hoursReport} googleHours={details?.hours} onSaved={loadHours} />
 
       <Amenities parkId={parkId} uid={uid} />
       <ParkEvents parkId={parkId} uid={uid} />
@@ -472,5 +500,236 @@ function Reviews({ parkId, uid, onChange }) {
         </article>
       ))}
     </section>
+  );
+}
+
+function Photos({ parkId, uid, parkName, details, onReported }) {
+  const [community, setCommunity] = useState([]);
+  const [sel, setSel] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.from('park_photos')
+      .select('id, url, path, user_id, created_at, profile:profiles(display_name)')
+      .eq('park_id', parkId)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    setCommunity(data || []);
+  }, [parkId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Visitor photos first (they show the actual dog area), then Google's
+  const all = [
+    ...community.map((c) => ({ kind: 'user', key: c.id, url: c.url, row: c, credit: c.profile?.display_name || 'a visitor' })),
+    ...(details?.photos || []).map((g) => ({ kind: 'google', key: g.name, url: g.url, name: g.name, credits: g.credits || [] })),
+  ];
+  const cur = all[Math.min(sel, Math.max(all.length - 1, 0))];
+
+  async function upload(file) {
+    if (!file) return;
+    setBusy(true);
+    setMsg(null);
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+    const path = `${uid}/${parkId}-${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from('park-photos').upload(path, file, { contentType: file.type });
+    if (error) { setMsg(`Upload failed: ${error.message}`); setBusy(false); return; }
+    const { data: pub } = supabase.storage.from('park-photos').getPublicUrl(path);
+    const { error: rowErr } = await supabase.from('park_photos').insert({ park_id: parkId, user_id: uid, url: pub.publicUrl, path });
+    if (rowErr) setMsg(rowErr.message);
+    setBusy(false);
+    setSel(0);
+    load();
+  }
+
+  async function reportGoogle(photo) {
+    setBusy(true);
+    await supabase.from('park_photo_reports').insert({ park_id: parkId, photo_name: photo.name, user_id: uid });
+    setMsg('Thanks. That photo is hidden for everyone.');
+    setSel(0);
+    await onReported();
+    setBusy(false);
+  }
+
+  async function removeMine(photo) {
+    if (!window.confirm('Delete your photo?')) return;
+    await supabase.storage.from('park-photos').remove([photo.row.path]);
+    await supabase.from('park_photos').delete().eq('id', photo.row.id);
+    setSel(0);
+    load();
+  }
+
+  const uploadButton = (
+    <label className="btn">
+      {busy ? 'Working…' : 'Add a photo'}
+      <input type="file" accept="image/*" className="sr-only" disabled={busy} onChange={(e) => upload(e.target.files[0])} />
+    </label>
+  );
+
+  if (!cur) {
+    return (
+      <section className="card stack tight photo-empty" aria-label="Photos">
+        <span className="strong">No photos of this dog park yet</span>
+        <span className="muted small">Snap the dog area next time you visit so others know what to expect.</span>
+        <div className="btn-row">{uploadButton}</div>
+        {msg && <p className="small">{msg}</p>}
+      </section>
+    );
+  }
+
+  return (
+    <section className="stack tight" aria-label="Photos">
+      <figure className="park-hero">
+        <img key={cur.key} src={cur.url} alt={`${parkName}`} />
+        <figcaption className="photo-credit">
+          {cur.kind === 'user' ? (
+            <>Photo by {cur.credit}</>
+          ) : (
+            <>
+              Photo{cur.credits.length > 0 && ': '}
+              {cur.credits.map((c, i) => (
+                <span key={c.uri || i}>{i > 0 && ', '}<a href={c.uri} target="_blank" rel="noreferrer">{c.name}</a></span>
+              ))}{' '}· Google
+            </>
+          )}
+        </figcaption>
+      </figure>
+      {all.length > 1 && (
+        <div className="thumbs" role="group" aria-label="More photos">
+          {all.map((ph, i) => (
+            <button key={ph.key} className={ph.key === cur.key ? 'thumb on' : 'thumb'} onClick={() => setSel(i)} aria-label={`Photo ${i + 1}`}>
+              <img src={ph.url} alt="" />
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="btn-row">
+        {uploadButton}
+        {cur.kind === 'google' && (
+          <button className="link-btn" disabled={busy} onClick={() => reportGoogle(cur)}>Not this dog park? Hide photo</button>
+        )}
+        {cur.kind === 'user' && cur.row.user_id === uid && (
+          <button className="link-btn" onClick={() => removeMine(cur)}>Delete my photo</button>
+        )}
+      </div>
+      {msg && <p className="small">{msg}</p>}
+    </section>
+  );
+}
+
+function DogParkHours({ parkId, uid, report, googleHours, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const today = new Date().getDay();
+
+  if (report === undefined) return null;
+
+  return (
+    <section className="stack tight" aria-label="Dog park hours">
+      <div className="row-between">
+        <h2>Dog park hours</h2>
+        {!editing && (
+          <button className="link-btn" onClick={() => setEditing(true)}>{report ? 'Update hours' : 'Add hours'}</button>
+        )}
+      </div>
+
+      {editing ? (
+        <HoursForm parkId={parkId} uid={uid} initial={report?.hours} onCancel={() => setEditing(false)}
+          onSaved={() => { setEditing(false); onSaved(); }} />
+      ) : report ? (
+        <>
+          <ul className="hours-list">
+            {WEEK_ORDER.map((d) => (
+              <li key={d} className={d === today ? 'today' : ''}>
+                <span>{DAY_NAMES[d]}</span><span>{dayText(report.hours[d])}</span>
+              </li>
+            ))}
+          </ul>
+          {report.note && <p className="small">{report.note}</p>}
+          <p className="muted small">
+            Reported by {report.profile?.display_name || 'a visitor'} ·{' '}
+            {new Date(report.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+          </p>
+        </>
+      ) : (
+        <p className="muted">
+          No one has added this dog park’s hours yet. If you know them (from the posted sign or the city’s website), add them.
+        </p>
+      )}
+
+      {googleHours && !editing && (
+        <details className="google-hours">
+          <summary>{report ? 'Hours listed on Google' : 'Hours listed on Google (may be for the whole park)'}</summary>
+          <ul className="hours-list">
+            {googleHours.map((h) => <li key={h}>{h}</li>)}
+          </ul>
+        </details>
+      )}
+    </section>
+  );
+}
+
+function HoursForm({ parkId, uid, initial, onCancel, onSaved }) {
+  const blank = { closed: false, open: '06:00', close: '22:00' };
+  const [hours, setHours] = useState(() => {
+    const h = {};
+    for (let d = 0; d < 7; d++) h[d] = { ...blank, ...(initial?.[d] || {}) };
+    return h;
+  });
+  const [note, setNote] = useState('');
+  const [err, setErr] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const setDay = (d, patch) => setHours({ ...hours, [d]: { ...hours[d], ...patch } });
+  const copyMonday = () => {
+    const h = {};
+    for (let d = 0; d < 7; d++) h[d] = { ...hours[1] };
+    setHours(h);
+  };
+
+  async function submit(e) {
+    e.preventDefault();
+    setSaving(true);
+    setErr(null);
+    const { error } = await supabase.from('park_hours_reports')
+      .insert({ park_id: parkId, user_id: uid, hours, note: note.trim() || null });
+    setSaving(false);
+    if (error) setErr(error.message);
+    else onSaved();
+  }
+
+  return (
+    <form className="card stack" onSubmit={submit}>
+      <p className="small muted">Enter the hours for the fenced dog area itself, as posted at the gate or on the city’s site.</p>
+      {WEEK_ORDER.map((d) => (
+        <div key={d} className="hours-row">
+          <span className="strong day-name">{DAY_NAMES[d].slice(0, 3)}</span>
+          <label className="check small">
+            <input type="checkbox" checked={hours[d].closed} onChange={(e) => setDay(d, { closed: e.target.checked })} /> Closed
+          </label>
+          {!hours[d].closed && (
+            <>
+              <input type="time" className="input time" aria-label={`${DAY_NAMES[d]} opens`} value={hours[d].open}
+                onChange={(e) => setDay(d, { open: e.target.value })} required />
+              <span className="muted">to</span>
+              <input type="time" className="input time" aria-label={`${DAY_NAMES[d]} closes`} value={hours[d].close}
+                onChange={(e) => setDay(d, { close: e.target.value })} required />
+            </>
+          )}
+        </div>
+      ))}
+      <button type="button" className="link-btn left" onClick={copyMonday}>Use Monday’s hours for every day</button>
+      <div className="field">
+        <label htmlFor="hours-note">Anything else? (optional)</label>
+        <input id="hours-note" className="input" maxLength={280} value={note} onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. Closed Wednesday 7–10 AM for mowing; closes after heavy rain" />
+      </div>
+      <p className="muted small">For 24-hour parks, set opens and closes both to 12:00 AM.</p>
+      {err && <p className="error" role="alert">{err}</p>}
+      <div className="btn-row">
+        <button className="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save hours'}</button>
+        <button type="button" className="btn" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
   );
 }

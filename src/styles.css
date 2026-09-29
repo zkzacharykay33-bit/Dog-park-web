@@ -226,3 +226,16 @@ textarea.input { min-height: 96px; resize: vertical; }
 @media (max-width: 720px) {
   .amenity-grid { grid-template-columns: 1fr; }
 }
+
+/* Photos and hours accuracy */
+.thumbs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.thumb { flex-shrink: 0; width: 72px; height: 54px; padding: 0; border: 2px solid transparent; border-radius: 10px; overflow: hidden; cursor: pointer; background: none; }
+.thumb.on { border-color: var(--accent); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-empty { background: var(--accent-soft); border-color: transparent; }
+label.btn { cursor: pointer; }
+.hours-list li { display: flex; justify-content: space-between; gap: 12px; }
+.hours-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.day-name { width: 40px; }
+.input.time { width: auto; min-width: 120px; }
+.google-hours summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; color: var(--muted); font-weight: 600; }
